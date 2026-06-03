@@ -1,0 +1,5 @@
+viewDistance:0
+fog:true
+fov:70
+mouseSensitivity:5
+smoothLighting:false
