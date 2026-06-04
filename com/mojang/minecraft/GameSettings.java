@@ -11,6 +11,10 @@ public class GameSettings {
     public int fov = 70;
     public int mouseSensitivity = 5;
     public boolean smoothLighting = false;
+    // Render scale: 0=100%, 1=75%, 2=50%, 3=33%.  Lower = fewer fragments
+    // shaded per frame — the single biggest FPS win on software OpenGL
+    // (llvmpipe) since fragment processing dominates the cost.
+    public int renderScale = 2;
     private File file = new File("options.txt");
     public GameSettings() {
         this.load();
@@ -35,8 +39,20 @@ public class GameSettings {
                 return "Mouse sens.: " + this.mouseSensitivity;
             case 4:
                 return "Smooth lighting: " + (this.smoothLighting ? "ON" : "OFF");
+            case 5:
+                String[] scales = {"100%", "75%", "50%", "33%"};
+                return "Render scale: " + scales[this.renderScale];
             default:
                 return "?";
+        }
+    }
+    public float getRenderScaleFactor() {
+        switch (this.renderScale) {
+            case 0: return 1.0F;
+            case 1: return 0.75F;
+            case 2: return 0.5F;
+            case 3: return 0.33F;
+            default: return 1.0F;
         }
     }
     public void toggle(int i) {
@@ -45,6 +61,7 @@ public class GameSettings {
         if (i == 2) { this.fov += 10; if (this.fov > 110) this.fov = 30; }
         if (i == 3) { this.mouseSensitivity++; if (this.mouseSensitivity > 10) this.mouseSensitivity = 1; }
         if (i == 4) this.smoothLighting = !this.smoothLighting;
+        if (i == 5) this.renderScale = (this.renderScale + 1) % 4;
         this.save();
     }
     public float getFogDistance() {
@@ -69,6 +86,7 @@ public class GameSettings {
                 if (kv[0].equals("fov")) this.fov = Integer.parseInt(kv[1]);
                 if (kv[0].equals("mouseSensitivity")) this.mouseSensitivity = Integer.parseInt(kv[1]);
                 if (kv[0].equals("smoothLighting")) this.smoothLighting = kv[1].equals("true");
+                if (kv[0].equals("renderScale")) this.renderScale = Integer.parseInt(kv[1]);
             }
             r.close();
         } catch (Exception e) {
@@ -83,6 +101,7 @@ public class GameSettings {
             w.write("fov:" + this.fov); w.newLine();
             w.write("mouseSensitivity:" + this.mouseSensitivity); w.newLine();
             w.write("smoothLighting:" + this.smoothLighting); w.newLine();
+            w.write("renderScale:" + this.renderScale); w.newLine();
             w.close();
         } catch (Exception e) {
             e.printStackTrace();

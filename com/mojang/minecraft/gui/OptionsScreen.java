@@ -9,7 +9,7 @@ public class OptionsScreen extends Screen {
     public void init(Minecraft minecraft, int width, int height) {
         super.init(minecraft, width, height);
         this.buttons.clear();
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             this.buttons.add(new Button(i, this.width / 2 - 100, this.height / 6 + 24 * i, this.minecraft.settings.getOption(i)));
         }
         this.buttons.add(new Button(200, this.width / 2 - 100, this.height / 6 + 168, "Done"));

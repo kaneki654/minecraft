@@ -110,7 +110,12 @@ public class Minecraft implements Runnable {
       Mouse.create();
       this.checkGlError("Pre startup");
       GL11.glEnable(3553);
-      GL11.glShadeModel(7425);
+      // GL_FLAT (7424) instead of GL_SMOOTH (7425) — software rasterizers
+      // (llvmpipe) interpolate per-vertex color across every pixel of every
+      // triangle under SMOOTH. FLAT just uses the provoking vertex color,
+      // ~2x faster fragment cost on llvmpipe.  Minecraft block faces are
+      // uniform-colored anyway so it's visually identical.
+      GL11.glShadeModel(7424);
       GL11.glClearColor(fr, fg, fb, 0.0F);
       GL11.glClearDepth(1.0D);
       GL11.glEnable(2929);
@@ -464,43 +469,59 @@ public class Minecraft implements Runnable {
    }
 
    private void pick(float a) {
-      this.selectBuffer.clear();
-      GL11.glSelectBuffer(this.selectBuffer);
-      GL11.glRenderMode(7170);
-      this.setupPickCamera(a, this.width / 2, this.height / 2);
-      this.levelRenderer.pick(this.player, Frustum.getFrustum());
-      int hits = GL11.glRenderMode(7168);
-      this.selectBuffer.flip();
-      this.selectBuffer.limit(this.selectBuffer.capacity());
-      long closest = 0L;
-      int[] names = new int[10];
-      int hitNameCount = 0;
+      // Fast voxel ray-cast (DDA).  Replaces the old GL_SELECT-based pick,
+      // which on llvmpipe was the single biggest per-frame cost — it walked
+      // 7x7x7 = 343 voxels and submitted 6 faces each through the software
+      // selection pipeline.  This version visits one voxel per step and
+      // stops on the first solid hit.
+      float px = this.player.xo + (this.player.x - this.player.xo) * a;
+      float py = this.player.yo + (this.player.y - this.player.yo) * a;
+      float pz = this.player.zo + (this.player.z - this.player.zo) * a;
 
-      for(int i = 0; i < hits; ++i) {
-         int nameCount = this.selectBuffer.get();
-         long minZ = (long)this.selectBuffer.get();
-         this.selectBuffer.get();
-         int j;
-         if (minZ >= closest && i != 0) {
-            for(j = 0; j < nameCount; ++j) {
-               this.selectBuffer.get();
-            }
+      double yaw   = Math.toRadians(this.player.yRot);
+      double pitch = Math.toRadians(this.player.xRot);
+      double cosP  = Math.cos(pitch);
+      float dx = (float)(-Math.sin(yaw) * cosP);
+      float dy = (float)(-Math.sin(pitch));
+      float dz = (float)( Math.cos(yaw) * cosP);
+
+      final float MAX_DIST = 5.0F;
+      int x = (int)Math.floor(px);
+      int y = (int)Math.floor(py);
+      int z = (int)Math.floor(pz);
+      int stepX = dx > 0 ? 1 : -1;
+      int stepY = dy > 0 ? 1 : -1;
+      int stepZ = dz > 0 ? 1 : -1;
+      float invDx = dx != 0 ? 1.0F / Math.abs(dx) : Float.MAX_VALUE;
+      float invDy = dy != 0 ? 1.0F / Math.abs(dy) : Float.MAX_VALUE;
+      float invDz = dz != 0 ? 1.0F / Math.abs(dz) : Float.MAX_VALUE;
+      float tMaxX = dx != 0 ? (((dx > 0 ? (x + 1) : x) - px) / dx) : Float.MAX_VALUE;
+      float tMaxY = dy != 0 ? (((dy > 0 ? (y + 1) : y) - py) / dy) : Float.MAX_VALUE;
+      float tMaxZ = dz != 0 ? (((dz > 0 ? (z + 1) : z) - pz) / dz) : Float.MAX_VALUE;
+      float tDeltaX = invDx;
+      float tDeltaY = invDy;
+      float tDeltaZ = invDz;
+
+      int hitFace = -1;
+      float t = 0.0F;
+      while (t < MAX_DIST) {
+         if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+            x += stepX; t = tMaxX; tMaxX += tDeltaX;
+            hitFace = stepX > 0 ? 4 : 5;
+         } else if (tMaxY < tMaxZ) {
+            y += stepY; t = tMaxY; tMaxY += tDeltaY;
+            hitFace = stepY > 0 ? 0 : 1;
          } else {
-            closest = minZ;
-            hitNameCount = nameCount;
-
-            for(j = 0; j < nameCount; ++j) {
-               names[j] = this.selectBuffer.get();
-            }
+            z += stepZ; t = tMaxZ; tMaxZ += tDeltaZ;
+            hitFace = stepZ > 0 ? 2 : 3;
+         }
+         int tile = this.level.getTile(x, y, z);
+         if (tile > 0 && Tile.tiles[tile] != null && Tile.tiles[tile].isSolid()) {
+            this.hitResult = new HitResult(0, x, y, z, hitFace);
+            return;
          }
       }
-
-      if (hitNameCount > 0) {
-         this.hitResult = new HitResult(names[0], names[1], names[2], names[3], names[4]);
-      } else {
-         this.hitResult = null;
-      }
-
+      this.hitResult = null;
    }
 
    public void render(float a) {
@@ -529,6 +550,14 @@ public class Minecraft implements Runnable {
       this.checkGlError("Set viewport");
       this.pick(a);
       this.checkGlError("Picked");
+      // Render the 3D world at reduced resolution (huge llvmpipe win).
+      // We render into a small viewport, copy that region to a texture, then
+      // upscale via a textured quad over the full window.  GUI/HUD draws
+      // after at full resolution so text stays crisp.
+      float rs = this.settings.getRenderScaleFactor();
+      int rsW = Math.max(1, (int)(this.width * rs));
+      int rsH = Math.max(1, (int)(this.height * rs));
+      GL11.glViewport(0, 0, rsW, rsH);
       GL11.glClear(16640);
       this.setupCamera(a);
       this.checkGlError("Set up camera");
@@ -575,6 +604,11 @@ public class Minecraft implements Runnable {
       }
 
       this.checkGlError("Rendered hit");
+      // Upscale the low-res 3D framebuffer to the full window via copy-to-texture.
+      if (rs < 0.999F) {
+         this.blitUpscaledWorld(rsW, rsH);
+      }
+      GL11.glViewport(0, 0, this.width, this.height);
       this.drawGui(a);
       if (this.currentScreen != null) {
          int sw = this.width * 240 / this.height;
