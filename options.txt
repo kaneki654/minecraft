@@ -1,4 +1,4 @@
-viewDistance:0
+viewDistance:3
 fog:true
 fov:70
 mouseSensitivity:5

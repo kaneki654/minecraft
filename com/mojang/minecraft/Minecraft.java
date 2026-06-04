@@ -121,14 +121,18 @@ public class Minecraft implements Runnable {
       GL11.glLoadIdentity();
       GL11.glMatrixMode(5888);
       this.checkGlError("Startup");
-      this.level = new Level(256, 256, 64);
+      this.level = new Level(0, 0, 128);
+      // Print the world seed to stdout so you can record it and reuse it.
+      // Pass the seed as the 4th constructor argument to recreate the same world:
+      //   new Level(256, 256, 64, <seed>L)
+      System.out.println("[World] Seed: " + this.level.getWorldSeed());
       this.levelRenderer = new LevelRenderer(this.level, this.textures);
       this.player = new Player(this.level);
       this.particleEngine = new ParticleEngine(this.level, this.textures);
       this.font = new Font("/default.gif", this.textures);
 
       for(int i = 0; i < 10; ++i) {
-         Zombie zombie = new Zombie(this.level, this.textures, 128.0F, 0.0F, 128.0F);
+         Zombie zombie = new Zombie(this.level, this.textures, 0.0F, 0.0F, 0.0F);
          zombie.resetPos();
          this.entities.add(zombie);
       }

@@ -1,4 +1,5 @@
 package com.mojang.minecraft;
+import com.mojang.minecraft.level.LevelRenderer;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -13,6 +14,13 @@ public class GameSettings {
     private File file = new File("options.txt");
     public GameSettings() {
         this.load();
+        this.applyViewDistance();
+    }
+    public void applyViewDistance() {
+        LevelRenderer.RENDER_DISTANCE = LevelRenderer.distanceForSetting(this.viewDistance);
+        if (LevelRenderer.activeInstance != null) {
+            LevelRenderer.activeInstance.invalidateChunkWindow();
+        }
     }
     public String getOption(int i) {
         switch (i) {
@@ -32,7 +40,7 @@ public class GameSettings {
         }
     }
     public void toggle(int i) {
-        if (i == 0) this.viewDistance = (this.viewDistance + 1) % 4;
+        if (i == 0) { this.viewDistance = (this.viewDistance + 1) % 4; this.applyViewDistance(); }
         if (i == 1) this.fog = !this.fog;
         if (i == 2) { this.fov += 10; if (this.fov > 110) this.fov = 30; }
         if (i == 3) { this.mouseSensitivity++; if (this.mouseSensitivity > 10) this.mouseSensitivity = 1; }

@@ -16,24 +16,63 @@ import java.util.List;
 import org.lwjgl.opengl.GL11;
 
 public class LevelRenderer implements LevelListener {
-   public static final int MAX_REBUILDS_PER_FRAME = 8;
+   /** Hard cap on chunk mesh rebuilds per frame – keeps the GPU busy but not stalled. */
+   public static final int MAX_REBUILDS_PER_FRAME = 4;
    public static final int CHUNK_SIZE = 16;
-   public static final int RENDER_DISTANCE = 6;
+
+   /**
+    * How many chunks in each direction around the player to keep loaded.
+    * 6 → 13×13 = 169 render chunks (roughly 208 block view distance).
+    * Increase cautiously: virgl/llvmpipe translates GL display-lists to
+    * CPU-side calls, so a higher value burns more CPU time on uploads.
+    */
+   public static int RENDER_DISTANCE = 6;
+
+   public static int distanceForSetting(int setting) {
+      switch (setting) {
+         case 0: return 12;  // Far
+         case 1: return 8;   // Normal
+         case 2: return 5;   // Short
+         case 3: return 3;   // Tiny
+         default: return 8;
+      }
+   }
+
+   /**
+    * Chunks closer than this distance (in chunk-units) are always rebuilt
+    * first when dirty.  Distant chunks are deferred to later frames so the
+    * immediate view is always snappy.
+    */
+   private static final int PRIORITY_REBUILD_DISTANCE = 3;
+
    private Level level;
    private HashMap chunks = new HashMap();
    private ArrayList chunkList = new ArrayList();
    private int yChunks;
    private Textures textures;
 
+   public static LevelRenderer activeInstance = null;
+   private int lastPlayerChunkX = Integer.MIN_VALUE;
+   private int lastPlayerChunkZ = Integer.MIN_VALUE;
+   public void invalidateChunkWindow() {
+      this.lastPlayerChunkX = Integer.MIN_VALUE;
+      this.lastPlayerChunkZ = Integer.MIN_VALUE;
+   }
+
    public LevelRenderer(Level level, Textures textures) {
       this.level = level;
       this.textures = textures;
       level.addListener(this);
-      this.yChunks = level.depth / 16;
+      // Use TALL vertical slices instead of 16-block ones.  For depth=128 this
+      // gives 2 vertical chunks instead of 8 — 4x fewer display lists, 4x fewer
+      // frustum tests per frame, 4x fewer dirty rebuilds.  The rebuild cost per
+      // chunk is slightly higher but most cells are air/buried so the inner
+      // skip-air loop absorbs that easily.
+      this.yChunks = level.depth / 64;
       if (this.yChunks < 1) {
          this.yChunks = 1;
       }
-
+      activeInstance = this;
    }
 
    private static String key(int x, int y, int z) {
@@ -51,8 +90,14 @@ public class LevelRenderer implements LevelListener {
    private void updateChunkWindow(Player player) {
       int px = chunkCoord(player.x);
       int pz = chunkCoord(player.z);
+
+      if (px == lastPlayerChunkX && pz == lastPlayerChunkZ) return;
+      lastPlayerChunkX = px;
+      lastPlayerChunkZ = pz;
+
       HashSet needed = new HashSet();
 
+      int slice = this.level.depth / this.yChunks;
       for(int x = px - RENDER_DISTANCE; x <= px + RENDER_DISTANCE; ++x) {
          for(int z = pz - RENDER_DISTANCE; z <= pz + RENDER_DISTANCE; ++z) {
             for(int y = 0; y < this.yChunks; ++y) {
@@ -60,9 +105,9 @@ public class LevelRenderer implements LevelListener {
                needed.add(key);
                if (!this.chunks.containsKey(key)) {
                   int x0 = x * 16;
-                  int y0 = y * 16;
+                  int y0 = y * slice;
                   int z0 = z * 16;
-                  int y1 = (y + 1) * 16;
+                  int y1 = (y + 1) * slice;
                   if (y1 > this.level.depth) {
                      y1 = this.level.depth;
                   }
@@ -75,13 +120,15 @@ public class LevelRenderer implements LevelListener {
          }
       }
 
+      // Evict (unload) chunks that have moved outside the render window.
+      // GL display lists are freed here → memory returned to the GPU driver.
       for(Iterator it = this.chunkList.iterator(); it.hasNext(); ) {
          Chunk chunk = (Chunk)it.next();
          int cx = chunkCoord(chunk.x0);
-         int cy = chunkCoord(chunk.y0);
+         int cy = chunk.y0 / slice;
          int cz = chunkCoord(chunk.z0);
          if (!needed.contains(key(cx, cy, cz))) {
-            chunk.dispose();
+            chunk.dispose();   // frees GL display list memory
             it.remove();
             this.chunks.remove(key(cx, cy, cz));
          }
@@ -125,12 +172,31 @@ public class LevelRenderer implements LevelListener {
       this.updateChunkWindow(player);
       List dirty = this.getAllDirtyChunks();
       if (dirty != null) {
+         // Sort: closest + in-frustum first, then further chunks.
+         // DirtyChunkSorter already handles this; it combines player distance
+         // with frustum visibility so the most "important" chunks rebuild first.
          Collections.sort(dirty, new DirtyChunkSorter(player, Frustum.getFrustum()));
 
-         for(int i = 0; i < 8 && i < dirty.size(); ++i) {
-            ((Chunk)dirty.get(i)).rebuild();
-         }
+         int rebuilt = 0;
+         Frustum frustum = Frustum.getFrustum();
+         for (int i = 0; i < dirty.size() && rebuilt < MAX_REBUILDS_PER_FRAME; ++i) {
+            Chunk c = (Chunk) dirty.get(i);
+            // Always rebuild in-frustum chunks; defer far out-of-frustum chunks
+            // to save GPU upload bandwidth on the virgl path.
+            boolean inFrustum = frustum.isVisible(c.aabb);
+            float chunkDist   = c.distanceToSqr(player);
+            float priorityDistSq = (PRIORITY_REBUILD_DISTANCE * CHUNK_SIZE)
+                                 * (PRIORITY_REBUILD_DISTANCE * CHUNK_SIZE);
 
+            if (inFrustum || chunkDist < priorityDistSq) {
+               c.rebuild();
+               ++rebuilt;
+            } else if (rebuilt == 0) {
+               // If nothing in-frustum needs a rebuild, allow one background rebuild
+               c.rebuild();
+               ++rebuilt;
+            }
+         }
       }
    }
 
@@ -242,10 +308,11 @@ public class LevelRenderer implements LevelListener {
    }
 
    public void setDirty(int x0, int y0, int z0, int x1, int y1, int z1) {
+      int slice = this.level.depth / this.yChunks;
       x0 = chunkCoord(x0);
       x1 = chunkCoord(x1);
-      y0 = chunkCoord(y0);
-      y1 = chunkCoord(y1);
+      y0 = y0 / slice;
+      y1 = y1 / slice;
       z0 = chunkCoord(z0);
       z1 = chunkCoord(z1);
       if (y0 < 0) y0 = 0;

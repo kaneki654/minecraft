@@ -50,9 +50,11 @@ public class Chunk {
       GL11.glNewList(this.lists + layer, 4864);
       t.init();
       int tiles = 0;
-      for(int x = this.x0; x < this.x1; ++x) {
-         for(int y = this.y0; y < this.y1; ++y) {
-            for(int z = this.z0; z < this.z1; ++z) {
+      // Y-outer / Z / X inner iteration matches the data-layout order
+      // [(y*16+z)*16+x] so the JIT can prefetch sequential bytes.
+      for(int y = this.y0; y < this.y1; ++y) {
+         for(int z = this.z0; z < this.z1; ++z) {
+            for(int x = this.x0; x < this.x1; ++x) {
                int tileId = this.level.getTile(x, y, z);
                if (tileId > 0) {
                   Tile.tiles[tileId].render(t, this.level, layer, x, y, z);

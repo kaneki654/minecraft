@@ -26,9 +26,18 @@ public class Entity {
         this.resetPos();
     }
     protected void resetPos() {
-        float x = (float)Math.random() * (float)this.level.width;
-        float y = (float)(this.level.depth + 10);
-        float z = (float)Math.random() * (float)this.level.height;
+        float x = (float)(Math.random() * 32.0 - 16.0);
+        float z = (float)(Math.random() * 32.0 - 16.0);
+        int ix = (int)Math.floor(x);
+        int iz = (int)Math.floor(z);
+        // Find the topmost solid tile column at (ix, iz), then place feet 1 block above it.
+        int top = this.level.depth - 1;
+        while (top > 0 && this.level.getTile(ix, top, iz) == 0) {
+            --top;
+        }
+        // top is the highest non-air tile. Feet should sit at top+1 (block above surface).
+        // y is the center of the bb, so y = feet + bbHeight/2.
+        float y = (float)(top + 1) + this.bbHeight / 2.0F;
         this.setPos(x, y, z);
     }
     public void remove() {
